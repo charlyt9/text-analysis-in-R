@@ -1,0 +1,222 @@
+---
+title: "Textual Analysis of Covid-19 Press Releases in Swahili"
+author: "Charles Tukiko"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+geometry: 
+bibliography: 
+  - citation-347762452.bib
+---
+
+**Load the packages**
+
+```{r message=FALSE}
+library(readr) 
+library(tidytext)
+library(tidyr)
+library(dplyr)
+library(ggraph)
+library(igraph)
+library(wordcloud)
+library(purrr)
+```
+
+**Read the file**
+
+```{r}
+df <- read_csv("Taifa_Leo.csv", show_col_types = FALSE)
+```
+
+**Check for any missing values**
+
+```{r}
+length(which(!complete.cases(df)))
+```
+
+**Restructure the data by removing characters, making the words lowercase and separating them**
+
+```{r}
+new_df <- unnest_tokens(tbl = df, input = Content, output = word)
+```
+
+**I created a custom list of stop words by combining *stopwords from [stopwords R package](https://cran.r-project.org/web/packages/stopwords/readme/README.html), @swahili2020* and *my own custom list* using the inverse document frequency (*idf*).**
+***more on idf is discussed later***
+
+```{r}
+stp_words <- read_csv("stopwords.csv", show_col_types = FALSE)
+```
+
+**Remove rows having stopwords using antijoin from dplyr package**
+
+```{r}
+txt_data <- anti_join(new_df, stp_words, by = "word")
+```
+
+**Remove rows containing numbers**
+
+```{r}
+new_txtdata <- txt_data %>% slice(which(!grepl("[[:digit:]]", word)))
+```
+
+**Count frequency of words after removing digits**
+
+```{r}
+word_frequency <- new_txtdata %>% count(word)
+```
+
+**idf measures how common a word is in the given corpus.The measure is low for frequently used words and high for rarely used words in a given document corpus.** 
+**It is calculated by finding the number of documents (*N*) and dividing by number of documents (*n~i~*) containing the term (*t~i~*) see @robertson2004**
+$$
+idf(t_i)= log\frac{N}{n_i}
+$$
+
+**Find unique words in the whole corpus**
+
+```{r}
+unique_words <- new_txtdata %>% pull(word) %>% unique()
+```
+
+**Number of articles in the corpus**
+
+```{r}
+num_docs <- new_txtdata %>% pull(3) %>% unique() %>% length()
+```
+
+**Find unique words in each article**
+
+```{r message=FALSE}
+num_words <- (new_txtdata %>% 
+               nest(data = c(word)) %>% 
+               pull(data) %>% 
+               map_dfc(~ unique_words %in% unique(pull(.x, word))) %>% 
+               rowSums())
+```
+
+**inverse document frequency**
+
+```{r}
+idf <- tibble(word = unique_words,idf = log(num_docs / num_words)) %>% arrange((idf))  
+```
+
+**Count number of word occurrences**
+
+```{r}
+wordcount <- new_txtdata %>% count(word)
+```
+
+**Visualize plot of the words whose frequency are more than 1300**
+
+```{r}
+new_txtdata %>% count(word) %>% filter(n > 1200) %>% ggplot(aes(
+  x = reorder(word, n),
+  y = n,
+  fill = n
+)) + geom_col() + coord_flip() + theme(legend.position = "none") + scale_fill_gradient(low = "green",
+                                                                                       high = "yellow",
+                                                                                       na.value = NA) +
+  labs(x = "Words",
+       y = "Frequency")
+```
+
+**Visualizing word frequencies in word cloud**
+
+```{r}
+word_frequencies <- new_txtdata %>% count(word)
+
+wordcloud(
+  words = word_frequencies$word,
+  freq = word_frequencies$n,
+  random.order = FALSE,
+  scale = c(3, 0.5),
+  min.freq = 1,
+  max.words = 200,
+  colors = c("#008080","#808000", "#6FA8F5", "#800000", "#00FF00", "#FF00FF", "#FF0000")
+)
+```
+
+### N-grams to exploring correlations of words ####
+
+**Create bigrams**
+```{r}
+nw_df <- df %>%
+  unnest_tokens(bigram, Content, token = "ngrams", n = 2) %>%
+  select(bigram)
+```
+
+**Remove rows containing numbers**
+
+```{r}
+nw_txtdata <-
+  nw_df %>% slice(which(!grepl("[[:digit:]]", bigram)))
+```
+
+**Inspect frequency of bigrams**
+
+```{r}
+nw_txtdata %>% count(bigram, sort = TRUE)
+```
+
+
+**Split the bigram**
+
+```{r}
+bigram_split <- nw_txtdata %>%
+  separate(col = bigram,
+           into = c("word1", "word2"),
+           sep = " ")
+```
+
+**Retain values in word1 and word2 that are not a word in stop_words**
+
+```{r}
+bigram_cleaned <-
+  bigram_split %>%
+  filter(!word1 %in% stp_words$word) %>%
+  filter(!word2 %in% stp_words$word)
+
+bigram_cleaned <- bigram_cleaned %>%
+  count(word1, word2, sort = TRUE)
+```
+
+**Join words for plotting**
+
+```{r}
+bigram_cleaned %>%
+  unite(col = bigram,
+        word1, word2,
+        sep = " ")
+```
+
+**Make plot reproducible**
+
+```{r}
+set.seed(1234)
+```
+
+**Create the special igraph object**
+
+```{r}
+graph <- igraph::graph_from_data_frame(bigram_cleaned)
+```
+
+**Filter the bigram for values more than 60**
+
+```{r}
+network_plot <- bigram_cleaned %>%
+  filter(n > 60) %>%
+  igraph::graph_from_data_frame()
+```
+
+**Plot network plot**
+
+```{r fig.width=10,fig.height=7}
+network_plot %>%
+  ggraph(layout = 'kk') +
+  geom_edge_link(aes(col = factor(n)), show.legend = FALSE) +
+  geom_node_point() +
+  geom_node_text(aes(label = name),
+                 vjust = 1,
+                 hjust = 1)
+```
+
+## References
